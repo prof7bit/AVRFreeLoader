@@ -18,13 +18,13 @@ implementation
 
 procedure TEAEnc(const Source; var Dest; var Feedback; const Key);
 const
-  TEA_Delta: Cardinal = $9E3779B9;
+  TEA_Delta: UInt32 = $9E3779B9;
 type
   TLongArray = array[0..3] of UInt32;
   PLongArray = ^TLongArray;
 var
   I: Integer;
-  A,B,Sum: Cardinal;
+  A,B,Sum: UInt32;
   S,D,F,K: PLongArray;
 begin
   Sum := 0;
