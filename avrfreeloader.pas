@@ -102,6 +102,11 @@ type
     procedure Lock;
     procedure Unlock;
   private
+    Part: TPartDescription;
+    AppVer: UInt32;
+    BootMsg: String;
+    BootVersion: Byte;
+    BootPages: Byte;
     FLock: TCriticalSection;
     TimeLastReceive: Double;
     TimeLastBootsign: TDateTime;
@@ -257,10 +262,6 @@ procedure TWorkerThread.OnBootsignResponse(Data: String);
 var
   RetCode: Byte;
   L: Integer;
-  AppVer: UInt32 = $ffffffff;
-  BootMsg: String = '';
-  BootVersion: Byte;
-  BootPages: Byte;
   Signature: UInt16;
   OK: Boolean = True;
 
@@ -333,9 +334,16 @@ begin
     OldVersion;
 
   if OK then begin
-    State := stConnected;
-    TimeLastKeepaliveResponse := Now;
-    Print(Format('connected, signature is %4x', [Signature]));
+    Part := GetPartDescription(Signature);
+    if Part.Signature = Signature then begin
+      Print('connected to ' + Part.Name);
+      State := stConnected;
+      TimeLastKeepaliveResponse := Now;
+    end
+    else begin
+      Print(Format('Unknown part: %4x', [Signature]));
+      State := stDisconnecting;
+    end;
   end;
 end;
 
