@@ -1,0 +1,8 @@
+/backup
+/lib
+*.ini
+*.lps
+*.exe
+*.res
+AVRFreeLoader_test_gui
+
