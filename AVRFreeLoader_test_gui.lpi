@@ -35,7 +35,7 @@
         <PackageName Value="LCL"/>
       </Item2>
     </RequiredPackages>
-    <Units Count="5">
+    <Units Count="6">
       <Unit0>
         <Filename Value="AVRFreeLoader_test_gui.pas"/>
         <IsPartOfProject Value="True"/>
@@ -62,8 +62,13 @@
       <Unit4>
         <Filename Value="serial_fpctrunk.pp"/>
         <IsPartOfProject Value="True"/>
-        <UnitName Value="serial_fpctrunk"/>
+        <UnitName Value="Serial_fpctrunk"/>
       </Unit4>
+      <Unit5>
+        <Filename Value="partsdescription.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="PartsDescription"/>
+      </Unit5>
     </Units>
   </ProjectOptions>
   <CompilerOptions>

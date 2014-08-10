@@ -28,7 +28,7 @@ unit AVRFreeLoader;
 interface
 
 uses
-  Classes, SysUtils, ComPort, syncobjs;
+  Classes, SysUtils, ComPort, syncobjs, PartsDescription;
 
 const
   DAY           = 1;
