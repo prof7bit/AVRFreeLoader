@@ -35,7 +35,7 @@
         <PackageName Value="LCL"/>
       </Item2>
     </RequiredPackages>
-    <Units Count="6">
+    <Units Count="7">
       <Unit0>
         <Filename Value="AVRFreeLoader_test_gui.pas"/>
         <IsPartOfProject Value="True"/>
@@ -69,6 +69,11 @@
         <IsPartOfProject Value="True"/>
         <UnitName Value="PartsDescription"/>
       </Unit5>
+      <Unit6>
+        <Filename Value="xtea.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="XTEA"/>
+      </Unit6>
     </Units>
   </ProjectOptions>
   <CompilerOptions>
