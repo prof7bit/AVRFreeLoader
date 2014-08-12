@@ -85,33 +85,33 @@ type
     Password: String;
     destructor Destroy; override;
   private
-    WorkerThread: TWorkerThread;
-    ComPort: TSimpleComPort;
+    FWorkerThread: TWorkerThread;
+    FComPort: TSimpleComPort;
     procedure Print(Txt: String);
   end;
 
   { TWorkerThread }
 
   TWorkerThread = class(TThread)
-    FreeLoader: TAVRFreeLoader;
-    ComPort: TSimpleComPort;
     State: TState;
-    constructor Create(AFreeLoader: TAVRFreeLoader);
+    constructor Create(AFreeLoader: TAVRFreeLoader; AComPort: TSimpleComPort);
     destructor Destroy; override;
     procedure Execute; override;
   private
-    Part: TPartDescription;
-    AppVer: UInt32;
-    BootMsg: String;
-    BootVersion: Byte;
-    BootPages: Byte;
-    TimeLastReceive: Double;
-    TimeLastBootsign: TDateTime;
-    TimeLastKeepalive: TDateTime;
-    TimeLastKeepaliveResponse: TDateTime;
-    SyncPrintText: String;
-    ReceiveBuffer: String;
-    ReceivedMessage: String;
+    FFreeLoader: TAVRFreeLoader;
+    FComPort: TSimpleComPort;
+    FPart: TPartDescription;
+    FAppVer: UInt32;
+    FBootMsg: String;
+    FBootVersion: Byte;
+    FBootPages: Byte;
+    FTimeLastReceive: Double;
+    FTimeLastBootsign: TDateTime;
+    FTimeLastKeepalive: TDateTime;
+    FTimeLastKeepaliveResponse: TDateTime;
+    FSyncPrintText: String;
+    FReceiveBuffer: String;
+    FReceivedMessage: String;
     FOneWire: Boolean;
     FEchoCancelCounter: Integer;
     FLastSent: String;
@@ -155,13 +155,13 @@ end;
 
 { TWorkerThread }
 
-constructor TWorkerThread.Create(AFreeLoader: TAVRFreeLoader);
+constructor TWorkerThread.Create(AFreeLoader: TAVRFreeLoader; AComPort: TSimpleComPort);
 begin
   inherited Create(True);
   FOneWire := False;
   FEchoCancelCounter := 0;
-  FreeLoader := AFreeLoader;
-  ComPort := FreeLoader.ComPort;
+  FFreeLoader := AFreeLoader;
+  FComPort := AComPort;
   State := stDisconnected;
 end;
 
@@ -175,24 +175,24 @@ var
   B: Byte = 0;
 begin
   repeat
-    if ComPort.IsOpen then begin
-      if ComPort.Receice(10, B) = 1 then begin
+    if FComPort.IsOpen then begin
+      if FComPort.Receice(10, B) = 1 then begin
         if FOneWire and (FEchoCancelCounter > 0) then begin
           Dec(FEchoCancelCounter)
         end
         else begin
-          ReceiveBuffer += Chr(B);
-          TimeLastReceive := Now;
+          FReceiveBuffer += Chr(B);
+          FTimeLastReceive := Now;
         end;
       end;
     end
     else begin
       Sleep(100);
     end;
-    if Length(ReceiveBuffer) > 0 then begin
-      if Now - TimeLastReceive > TIME_WAIT_AFTER_LAST_RECEIVE then begin
-        ReceivedMessage := ReceiveBuffer;
-        ReceiveBuffer := '';
+    if Length(FReceiveBuffer) > 0 then begin
+      if Now - FTimeLastReceive > TIME_WAIT_AFTER_LAST_RECEIVE then begin
+        FReceivedMessage := FReceiveBuffer;
+        FReceiveBuffer := '';
       end;
     end;
     CheckAction;
@@ -201,8 +201,8 @@ end;
 
 function TWorkerThread.GetReceivedMessage: String;
 begin
-  Result := ReceivedMessage;
-  ReceivedMessage := '';
+  Result := FReceivedMessage;
+  FReceivedMessage := '';
 end;
 
 procedure TWorkerThread.CheckAction;
@@ -213,8 +213,8 @@ begin
   S := State;
 
   if S = stConnecting then begin
-    if not ComPort.IsOpen then begin
-      if ComPort.Open(FreeLoader.Port, FreeLoader.Baud, 8, 'N', 2) then begin
+    if not FComPort.IsOpen then begin
+      if FComPort.Open(FFreeLoader.Port, FFreeLoader.Baud, 8, 'N', 2) then begin
         Print('serial port opened');
         FOneWire := False;
       end
@@ -225,7 +225,7 @@ begin
       exit;
     end;
 
-    if Now - TimeLastBootsign > INTERVAL_SEND_BOOTSIGN then
+    if Now - FTimeLastBootsign > INTERVAL_SEND_BOOTSIGN then
       SendBootsign;
     Msg := GetReceivedMessage;
     if Msg <> '' then
@@ -233,12 +233,12 @@ begin
   end
 
   else if S = stConnected then begin
-    if Now - TimeLastKeepalive > INTERVAL_SEND_KEEPALIVE then
+    if Now - FTimeLastKeepalive > INTERVAL_SEND_KEEPALIVE then
       SendKeepalive;
     Msg := GetReceivedMessage;
     if Msg <> '' then
       OnKeepaliveResponse(Msg);
-    if (Now - TimeLastKeepaliveResponse) > TIMEOUT_KEEPALIVE then begin
+    if (Now - FTimeLastKeepaliveResponse) > TIMEOUT_KEEPALIVE then begin
       Print('keepalive timeout');
       State := stDisconnecting;
     end;
@@ -246,7 +246,7 @@ begin
 
   else if S = stDisconnecting then begin
     SendWithCRC(#0#1);
-    ComPort.Close;
+    FComPort.Close;
     State := stDisconnected;
     FOneWire := False;
     Print('disconnected');
@@ -255,13 +255,13 @@ end;
 
 procedure TWorkerThread.Print(Txt: String);
 begin
-  SyncPrintText := Txt;
+  FSyncPrintText := Txt;
   Synchronize(@SyncPrint);
 end;
 
 procedure TWorkerThread.SyncPrint;
 begin
-  FreeLoader.Print(SyncPrintText);
+  FFreeLoader.Print(FSyncPrintText);
 end;
 
 procedure TWorkerThread.OnBootsignResponse(Data: String);
@@ -280,7 +280,7 @@ var
 
   procedure OldVersion;
   begin
-    Print(Format('bootloader version too old: %d (sorry)', [BootVersion]));
+    Print(Format('bootloader version too old: %d (sorry)', [FBootVersion]));
     State := stDisconnecting;
     OK := False;
   end;
@@ -302,56 +302,56 @@ begin
     InvalidResponse;
 
   if (RetCode and HAS_VERSIONING) <> 0 then begin
-    // 3: BootMsg + BootInfo + Version + SUCCESS
+    // 3: FBootMsg + BootInfo + Version + SUCCESS
     if L < 9 then
       InvalidResponse;
 
-    AppVer := Ord(Data[L-4]) or Ord(Data[L-3]) shl 8 or Ord(Data[L-2]) shl 16 or Ord(Data[L-1]) shl 24;
-    BootVersion := Ord(Data[L-6]);
-    BootPages := Ord(Data[L-5]);
+    FAppVer := Ord(Data[L-4]) or Ord(Data[L-3]) shl 8 or Ord(Data[L-2]) shl 16 or Ord(Data[L-1]) shl 24;
+    FBootVersion := Ord(Data[L-6]);
+    FBootPages := Ord(Data[L-5]);
     Signature := Ord(Data[L-7]) or Ord(Data[L-8]) shl 8;
-    SetString(BootMsg, PChar(Data), L-9);
+    SetString(FBootMsg, PChar(Data), L-9);
   end
 
   else begin
     if L = 5 then begin
       // BootInfo + SUCCESS
-      BootVersion := Ord(Data[3]);
-      if BootVersion < 2 then
+      FBootVersion := Ord(Data[3]);
+      if FBootVersion < 2 then
         OldVersion;
 
-      BootPages := Ord(Data[4]);
+      FBootPages := Ord(Data[4]);
       Signature := Ord(Data[2]) or Ord(Data[1]) shl 8;
     end
 
     else if (Data[5] = Data[L]) and (Ord(Data[3]) = 2) then begin
-      // 2: BootInfo + SUCCESS + BootMsg + SUCCESS
-      BootVersion := Ord(Data[3]);
-      BootPages := Ord(Data[4]);
+      // 2: BootInfo + SUCCESS + FBootMsg + SUCCESS
+      FBootVersion := Ord(Data[3]);
+      FBootPages := Ord(Data[4]);
       Signature := Ord(Data[2]) or Ord(Data[1]) shl 8;
-      SetString(BootMsg, PChar(@Data[6]), L-6);
+      SetString(FBootMsg, PChar(@Data[6]), L-6);
     end
     else begin
-      // 3: BootMsg + BootInfo + SUCCESS
-      BootVersion := Ord(Data[L-2]);
-      if BootVersion < 3 then
+      // 3: FBootMsg + BootInfo + SUCCESS
+      FBootVersion := Ord(Data[L-2]);
+      if FBootVersion < 3 then
         InvalidResponse;
 
-      BootPages := Ord(Data[L-1]);
+      FBootPages := Ord(Data[L-1]);
       Signature := Ord(Data[L-3]) or Ord(Data[L- 4]) shl 8;
-      SetString(BootMsg, PChar(Data), L-5);
+      SetString(FBootMsg, PChar(Data), L-5);
     end;
   end;
 
-  if BootVersion < 2 then
+  if FBootVersion < 2 then
     OldVersion;
 
   if OK then begin
-    Part := GetPartDescription(Signature);
-    if Part.Signature = Signature then begin
-      Print('connected to ' + Part.Name);
+    FPart := GetPartDescription(Signature);
+    if FPart.Signature = Signature then begin
+      Print('connected to ' + FPart.Name);
       State := stConnected;
-      TimeLastKeepaliveResponse := Now;
+      FTimeLastKeepaliveResponse := Now;
     end
     else begin
       Print(Format('Unknown part: %4x', [Signature]));
@@ -369,25 +369,25 @@ begin
     State := stDisconnecting;
   end
   else
-    TimeLastKeepaliveResponse := Now;
+    FTimeLastKeepaliveResponse := Now;
 end;
 
 procedure TWorkerThread.SendBootsign;
 var
   Data: String;
 begin
-  Data := FreeLoader.BootSign;
+  Data := FFreeLoader.BootSign;
   if Length(Data) mod 2 > 0 then
     Data += #0;
   Data := #0#0#0#0#0#0#0#0#0#13 + AddCRC(Data);
   Send(Data);
-  TimeLastBootsign := Now;
+  FTimeLastBootsign := Now;
 end;
 
 procedure TWorkerThread.SendKeepalive;
 begin
   SendWithCRC(#$fd#$00);
-  TimeLastKeepalive := Now;
+  FTimeLastKeepalive := Now;
 end;
 
 function TWorkerThread.AddCRC(Data: String): String;
@@ -409,11 +409,11 @@ end;
 
 procedure TWorkerThread.Send(Data: String);
 begin
-  if ComPort.IsOpen then begin
+  if FComPort.IsOpen then begin
     if FOneWire then begin
       FEchoCancelCounter += Length(Data);
     end;
-    ComPort.Send(Data);
+    FComPort.Send(Data);
     FLastSent := Data;
   end;
 end;
@@ -423,23 +423,23 @@ end;
 constructor TAVRFreeLoader.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-  ComPort := TSimpleComPort.Create(Self);
-  WorkerThread := TWorkerThread.Create(Self);
-  WorkerThread.Start;
+  FComPort := TSimpleComPort.Create(Self);
+  FWorkerThread := TWorkerThread.Create(Self, FComPort);
+  FWorkerThread.Start;
 end;
 
 destructor TAVRFreeLoader.Destroy;
 begin
-  WorkerThread.Terminate;
-  WorkerThread.WaitFor;
-  WorkerThread.Free;
+  FWorkerThread.Terminate;
+  FWorkerThread.WaitFor;
+  FWorkerThread.Free;
   inherited Destroy;
 end;
 
 procedure TAVRFreeLoader.Connect;
 begin
-  if WorkerThread.State = stDisconnected then begin
-    WorkerThread.State := stConnecting;
+  if FWorkerThread.State = stDisconnected then begin
+    FWorkerThread.State := stConnecting;
     // the actual action happens in the
     // CheckAction() method of the worker
     // thread which is called periodically
@@ -451,8 +451,8 @@ end;
 
 procedure TAVRFreeLoader.Disconnect;
 begin
-  if WorkerThread.State <> stDisconnected then begin
-    WorkerThread.State := stDisconnecting;
+  if FWorkerThread.State <> stDisconnected then begin
+    FWorkerThread.State := stDisconnecting;
   end;
 end;
 
