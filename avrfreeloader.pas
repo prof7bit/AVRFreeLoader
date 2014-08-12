@@ -28,7 +28,7 @@ unit AVRFreeLoader;
 interface
 
 uses
-  Classes, SysUtils, ComPort, syncobjs, PartsDescription, XTEA;
+  Classes, SysUtils, ComPort, PartsDescription, XTEA;
 
 const
   DAY           = 1;
@@ -99,15 +99,12 @@ type
     constructor Create(AFreeLoader: TAVRFreeLoader);
     destructor Destroy; override;
     procedure Execute; override;
-    procedure Lock;
-    procedure Unlock;
   private
     Part: TPartDescription;
     AppVer: UInt32;
     BootMsg: String;
     BootVersion: Byte;
     BootPages: Byte;
-    FLock: TCriticalSection;
     TimeLastReceive: Double;
     TimeLastBootsign: TDateTime;
     TimeLastKeepalive: TDateTime;
@@ -163,7 +160,6 @@ begin
   inherited Create(True);
   FOneWire := False;
   FEchoCancelCounter := 0;
-  FLock := TCriticalSection.Create;
   FreeLoader := AFreeLoader;
   ComPort := FreeLoader.ComPort;
   State := stDisconnected;
@@ -171,7 +167,6 @@ end;
 
 destructor TWorkerThread.Destroy;
 begin
-  FLock.Free;
   inherited Destroy;
 end;
 
@@ -181,7 +176,7 @@ var
 begin
   repeat
     if ComPort.IsOpen then begin
-      if ComPort.Receice(1, B) = 1 then begin
+      if ComPort.Receice(10, B) = 1 then begin
         if FOneWire and (FEchoCancelCounter > 0) then begin
           Dec(FEchoCancelCounter)
         end
@@ -204,16 +199,6 @@ begin
   until Terminated;
 end;
 
-procedure TWorkerThread.Lock;
-begin
-  FLock.Acquire;
-end;
-
-procedure TWorkerThread.Unlock;
-begin
-  FLock.Release;
-end;
-
 function TWorkerThread.GetReceivedMessage: String;
 begin
   Result := ReceivedMessage;
@@ -229,15 +214,15 @@ begin
 
   if S = stConnecting then begin
     if not ComPort.IsOpen then begin
-      if not ComPort.Open(FreeLoader.Port, FreeLoader.Baud, 8, 'N', 2) then begin
-        Print('serial port could not be opened');
-        State := stDisconnecting;
-        exit;
-      end
-      else begin
+      if ComPort.Open(FreeLoader.Port, FreeLoader.Baud, 8, 'N', 2) then begin
         Print('serial port opened');
         FOneWire := False;
+      end
+      else begin
+        Print('serial port could not be opened');
+        State := stDisconnecting;
       end;
+      exit;
     end;
 
     if Now - TimeLastBootsign > INTERVAL_SEND_BOOTSIGN then
