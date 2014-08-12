@@ -115,6 +115,8 @@ type
     SyncPrintText: String;
     ReceiveBuffer: String;
     ReceivedMessage: String;
+    FOneWire: Boolean;
+    FEchoCancelCounter: Integer;
     FLastSent: String;
     function GetReceivedMessage: String;
     procedure CheckAction;
@@ -159,6 +161,8 @@ end;
 constructor TWorkerThread.Create(AFreeLoader: TAVRFreeLoader);
 begin
   inherited Create(True);
+  FOneWire := False;
+  FEchoCancelCounter := 0;
   FLock := TCriticalSection.Create;
   FreeLoader := AFreeLoader;
   ComPort := FreeLoader.ComPort;
@@ -178,8 +182,13 @@ begin
   repeat
     if ComPort.IsOpen then begin
       if ComPort.Receice(1, B) = 1 then begin
-        ReceiveBuffer += Chr(B);
-        TimeLastReceive := Now;
+        if FOneWire and (FEchoCancelCounter > 0) then begin
+          Dec(FEchoCancelCounter)
+        end
+        else begin
+          ReceiveBuffer += Chr(B);
+          TimeLastReceive := Now;
+        end;
       end;
     end
     else begin
@@ -191,9 +200,7 @@ begin
         ReceiveBuffer := '';
       end;
     end;
-    Lock;
     CheckAction;
-    Unlock;
   until Terminated;
 end;
 
@@ -211,12 +218,6 @@ function TWorkerThread.GetReceivedMessage: String;
 begin
   Result := ReceivedMessage;
   ReceivedMessage := '';
-
-  // remove single wire echo
-  if LeftStr(Result, Length(FLastSent)) = FLastSent then begin
-    Result := RightStr(Result, Length(Result) - Length(FLastSent));
-    FLastSent := '';
-  end;
 end;
 
 procedure TWorkerThread.CheckAction;
@@ -227,6 +228,18 @@ begin
   S := State;
 
   if S = stConnecting then begin
+    if not ComPort.IsOpen then begin
+      if not ComPort.Open(FreeLoader.Port, FreeLoader.Baud, 8, 'N', 2) then begin
+        Print('serial port could not be opened');
+        State := stDisconnecting;
+        exit;
+      end
+      else begin
+        Print('serial port opened');
+        FOneWire := False;
+      end;
+    end;
+
     if Now - TimeLastBootsign > INTERVAL_SEND_BOOTSIGN then
       SendBootsign;
     Msg := GetReceivedMessage;
@@ -250,6 +263,7 @@ begin
     SendWithCRC(#0#1);
     ComPort.Close;
     State := stDisconnected;
+    FOneWire := False;
     Print('disconnected');
   end;
 end;
@@ -287,6 +301,13 @@ var
   end;
 
 begin
+  if Pos(FLastSent, Data) > 0 then begin
+    Print('activating echo cancelation (one-wire mode)');
+    FOneWire := True;
+    FEchoCancelCounter := 0;
+    exit;
+  end;
+
   L := Length(Data);
   if L < 5 then
     InvalidResponse;
@@ -404,6 +425,9 @@ end;
 procedure TWorkerThread.Send(Data: String);
 begin
   if ComPort.IsOpen then begin
+    if FOneWire then begin
+      FEchoCancelCounter += Length(Data);
+    end;
     ComPort.Send(Data);
     FLastSent := Data;
   end;
@@ -429,32 +453,22 @@ end;
 
 procedure TAVRFreeLoader.Connect;
 begin
-  ComPort.Open(Port, Baud, 8, 'N', 2);
-  if ComPort.IsOpen then begin
-    WorkerThread.Lock;
-    if WorkerThread.State = stDisconnected then begin
-      Print('trying to connect');
-      WorkerThread.State := stConnecting;
-      // the actual action happens in the
-      // CheckAction() method of the worker
-      // thread which is called periodically
-      // all the time
-    end
-    else
-      Print('already trying to connect');
-    WorkerThread.Unlock;
+  if WorkerThread.State = stDisconnected then begin
+    WorkerThread.State := stConnecting;
+    // the actual action happens in the
+    // CheckAction() method of the worker
+    // thread which is called periodically
+    // all the time
   end
   else
-    Print('Error opening serial port :-(');
+    Print('already trying to connect');
 end;
 
 procedure TAVRFreeLoader.Disconnect;
 begin
-  WorkerThread.Lock;
   if WorkerThread.State <> stDisconnected then begin
     WorkerThread.State := stDisconnecting;
   end;
-  WorkerThread.Unlock;
 end;
 
 procedure TAVRFreeLoader.Print(Txt: String);
