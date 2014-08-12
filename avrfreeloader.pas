@@ -39,7 +39,7 @@ const
 
   INTERVAL_SEND_BOOTSIGN        = 300 * MILLI_SECOND;
   INTERVAL_SEND_KEEPALIVE       = 300 * MILLI_SECOND;
-  TIME_WAIT_AFTER_LAST_RECEIVE  =  30 * MILLI_SECOND;
+  TIME_WAIT_AFTER_LAST_RECEIVE  = 100 * MILLI_SECOND;
   TIMEOUT_KEEPALIVE             =   2 * INTERVAL_SEND_KEEPALIVE;
 
   // return codes from bootloader
@@ -115,6 +115,7 @@ type
     SyncPrintText: String;
     ReceiveBuffer: String;
     ReceivedMessage: String;
+    FLastSent: String;
     function GetReceivedMessage: String;
     procedure CheckAction;
     procedure Print(Txt: String);
@@ -210,6 +211,12 @@ function TWorkerThread.GetReceivedMessage: String;
 begin
   Result := ReceivedMessage;
   ReceivedMessage := '';
+
+  // remove single wire echo
+  if LeftStr(Result, Length(FLastSent)) = FLastSent then begin
+    Result := RightStr(Result, Length(Result) - Length(FLastSent));
+    FLastSent := '';
+  end;
 end;
 
 procedure TWorkerThread.CheckAction;
@@ -396,8 +403,10 @@ end;
 
 procedure TWorkerThread.Send(Data: String);
 begin
-  if ComPort.IsOpen then
+  if ComPort.IsOpen then begin
     ComPort.Send(Data);
+    FLastSent := Data;
+  end;
 end;
 
 { TAVRFreeLoader }
