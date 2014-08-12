@@ -24,8 +24,7 @@ uses
   {$ENDIF}
   Interfaces,
   Forms,
-  FMain,
-  ComPort;
+  FMain;
 
 {$R *.res}
 
