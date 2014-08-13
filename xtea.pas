@@ -1,8 +1,5 @@
-{ TEAenc implementation as found in the original AVRootloader.txt
-  unmodified, just fixed the weird missing pointer dereferencing,
-  Delphi allows such confusing wrongness, Free Pascal insists on
-  properly written and formally correct code.
-}
+{ encrypt data with the modified XTEA algorithm as described in
+  the AVRootLoader.txt file that was found in the original zip}
 unit XTEA;
 
 {$mode objfpc}{$H+}
@@ -12,11 +9,13 @@ interface
 uses
   Classes, SysUtils;
 
-procedure TEAEnc(const Source; var Dest; var Feedback; const Key);
+procedure TEAEnc(const Source; out Dest; var Feedback; const Key);
+function TEAEncBuffer(Source: String; const Key): String;
 
 implementation
 
-procedure TEAEnc(const Source; var Dest; var Feedback; const Key);
+{ TEAenc implementation as found in the original AVRootloader.txt }
+procedure TEAEnc(const Source; out Dest; var Feedback; const Key);
 const
   TEA_Delta: UInt32 = $9E3779B9;
 type
@@ -52,6 +51,30 @@ begin
   F^[1] := F^[1] xor B;
   D^[0] := A;
   D^[1] := B;
+end;
+
+function TEAEncBuffer(Source: String; const Key): String;
+var
+  Remaining: Integer;
+  SrcPtr, DstPtr: ^UInt64;
+  Feedback: UInt64;
+begin
+  Remaining := Length(Source) mod 8;
+  if Remaining > 0 then begin
+    SetLength(Source, Length(Source) + 8 - Remaining);
+  end;
+
+  Remaining := Length(Source);
+  SetLength(Result, Remaining);
+  SrcPtr := @Source[1];
+  DstPtr := @Result[1];
+  Feedback := 0;
+  while Remaining > 0 do begin
+    TEAEnc(SrcPtr^, DstPtr^, Feedback, Key);
+    Inc(SrcPtr);
+    Inc(DstPtr);
+    Dec(Remaining, 8);
+  end;
 end;
 
 end.
