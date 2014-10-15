@@ -176,7 +176,7 @@ var
 begin
   repeat
     if FComPort.IsOpen then begin
-      if FComPort.Receice(10, B) = 1 then begin
+      if FComPort.ReceiveByte(10, B) = 1 then begin
         if FOneWire and (FEchoCancelCounter > 0) then begin
           Dec(FEchoCancelCounter)
         end

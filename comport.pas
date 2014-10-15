@@ -1,4 +1,5 @@
-{ simple wrapper around serial.pp
+{ simple wrapper for serial.pp on unix and implementation of
+  a subset of serial.pp for windows, using overlapped IO
 
   Copyright (C) 2014 Bernd Kreuss <prof7bit@gmail.com>
 
@@ -26,19 +27,11 @@ unit ComPort;
 {$mode objfpc}{$H+}
 
 interface
-
 uses
   {$ifdef windows}
   windows,
-    {$if FPC_FULLVERSION < 20701}
-      Serial_fpctrunk,
-    {$else}
-      Serial,
-    {$endif}
-  {$else}
-  Serial,
   {$endif}
-  Classes, sysutils;
+  Classes;
 
 type
   { TSimpleComPort }
@@ -48,43 +41,49 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     function Open(Port: String; Baud: Integer; Bits: Integer; Parity: Char; StopBits: Integer): Boolean;
-    procedure Send(B: Byte);
-    procedure Send(var Buffer; Count: LongInt);
-    procedure Send(Text: String);
-    function Receice(TimeoutMilli: Integer; var RecvByte: Byte): LongInt;
+    function Send(B: Byte): LongInt;
+    function Send(var Buffer; Count: LongInt): LongInt;
+    function Send(Text: String): LongInt;
+    function ReceiveByte(TimeoutMilli: Integer; out RecvByte: Byte): LongInt;
     procedure Close;
   private
     FHandle: THandle;
     FIsOpen: Boolean;
+    {$ifdef windows}
+    Overlapped_read: TOVERLAPPED;
+    Overlapped_write: TOVERLAPPED;
+    RxBuf: array[0..1024] of byte;
+    RxBufNext: DWORD;
+    RxBufLength: DWORD;
+    {$endif}
   public
-    property Handle: THandle read FHandle;
     property IsOpen: Boolean read FIsOpen;
   end;
 
 procedure EnumerateSerialPorts(List: TStrings);
 
 implementation
-
-{$ifdef linux}
-procedure EnumSerial_Linux(List: TStrings);
-var
-  SR: TSearchRec;
-begin
-  begin
-    if FindFirst('/sys/class/tty/*', faAnyFile, SR) = 0 then begin
-      repeat
-        if FileExists('/sys/class/tty/' + SR.Name + '/device/driver') then begin
-          List.Append('/dev/' + SR.Name);
-        end;
-      until FindNext(SR) <> 0;
-      FindClose(SR);
-    end;
-  end;
-end;
-{$endif}
-
 {$ifdef windows}
-procedure EnumSerial_Windows(List: TStrings);
+uses
+  sysutils;
+
+const
+  bufSize = 2048;
+  dcb_Binary           = $00000001;
+  // dcb_Parity           = $00000002;
+  // dcb_OutxCtsFlow      = $00000004;
+  // dcb_OutxDsrFlow      = $00000008;
+  // dcb_DtrControl       = $00000030;
+  // dcb_DsrSensivity     = $00000040;
+  // dcb_TXContinueOnXOff = $00000080;
+  // dcb_OutX             = $00000100;
+  // dcb_InX              = $00000200;
+  // dcb_ErrorChar        = $00000400;
+  // dcb_Null             = $00000800;
+  // dcb_RtsControl       = $00003000;
+  // dcb_AbortOnError     = $00004000;
+
+procedure EnumerateSerialPorts(List: TStrings);
 var
   I: Integer;
   FN: String;
@@ -100,31 +99,172 @@ begin
       FileClose(F);
   end;
 end;
-{$endif}
 
-procedure EnumerateSerialPorts(List: TStrings);
+{ TSimpleComPort }
+
+constructor TSimpleComPort.Create(AOwner: TComponent);
 begin
-  List.BeginUpdate;
-  List.Clear;
-  {$ifdef linux}
-  EnumSerial_Linux(List);
-  {$endif linux}
-  {$ifdef windows}
-  EnumSerial_Windows(List);
-  {$endif}
-  List.EndUpdate;
+  inherited Create(AOwner);
+  FIsOpen := False;
+  FillChar(Overlapped_write, SizeOf(Overlapped_write), 0);
+  FillChar(Overlapped_read, SizeOf(Overlapped_read), 0);
+  Overlapped_read.hEvent := CreateEvent(nil, True, False, nil);
 end;
 
-function ParityTypeFromChar(C: Char): TParityType;
+destructor TSimpleComPort.Destroy;
 begin
-  case C of
-    'N': Result := NoneParity;
-    'O': Result := OddParity;
-    'E': Result := EvenParity;
+  Close;
+  CloseHandle(Overlapped_read.hEvent);
+  inherited Destroy;
+end;
+
+function TSimpleComPort.Open(Port: String; Baud: Integer; Bits: Integer; Parity: Char; StopBits: Integer): Boolean;
+var
+  DCB: TDCB;
+  Timeouts: TCommTimeouts;
+begin
+  Result := False;
+  FHandle := CreateFile(
+    PChar(Port),
+    GENERIC_READ or GENERIC_WRITE,
+    0,
+    nil,
+    OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL or FILE_FLAG_OVERLAPPED,
+    0);
+
+  if FHandle <> INVALID_HANDLE_VALUE then begin
+    FillChar(DCB{%H-}, SizeOf(DCB), 0);
+    DCB.DCBlength := SizeOf(DCB);
+    DCB.flags := dcb_Binary;
+    DCB.BaudRate := Baud;
+    DCB.ByteSize := Bits;
+    case Parity of
+      'O':  DCB.Parity := Windows.ODDPARITY;
+      'E': DCB.Parity := Windows.EVENPARITY;
+      'N': DCB.Parity := Windows.NOPARITY;
+    end;
+    if StopBits > 1 then
+      DCB.StopBits := TWOSTOPBITS
+    else
+      DCB.StopBits := ONESTOPBIT;
+    if SetCommState(FHandle, DCB) then begin
+      FillChar(Timeouts{%H-}, SizeOf(Timeouts), 0);
+      Timeouts.ReadIntervalTimeout := MAXDWORD;
+      if SetCommTimeouts(FHandle, Timeouts) then begin
+        if SetupComm(FHandle, bufSize, bufSize) then begin
+          Result := True;
+          FIsOpen := True;
+          RxBufNext := 0;
+          RxBufLength := 0;
+        end;
+      end;
+    end;
+    if not Result then begin
+      CloseHandle(FHandle);
+    end;
   end;
 end;
 
-{ TSimpleComPort }
+function TSimpleComPort.Send(B: Byte): LongInt;
+begin
+  Result := Send(B, 1);
+end;
+
+function TSimpleComPort.Send(var Buffer; Count: LongInt): LongInt;
+var
+  Dummy: DWORD;
+begin
+  if IsOpen then begin
+    Dummy := 0;
+    Result := 0;
+    WriteFile(FHandle, Buffer, Count, Dummy, @Overlapped_write);
+    GetOverlappedResult(FHandle, Overlapped_write, DWORD(Result), False);
+  end
+  else
+    Result := 0;
+end;
+
+function TSimpleComPort.Send(Text: String): LongInt;
+begin
+  Result := Send(Text[1], Length(Text));
+end;
+
+function TSimpleComPort.ReceiveByte(TimeoutMilli: Integer; out RecvByte: Byte): LongInt;
+var
+  EvMask: DWORD;
+begin
+  // On windows it seems problematic with some USB/Serial drivers to
+  // read one byte at a time, the overhead is immense and strange
+  // behavior can be observed with some serial drivers. (On Linux
+  // this was not a problem at all). Therefore I will try to read
+  // in as many bytes as it is willing to give me on every call to
+  // ReadFile() and buffer them myself.
+
+  // Is the Buffer empty? Then read in a new chunk of bytes.
+  if RxBufNext = RxBufLength then begin
+    RxBufLength := 0;
+    RxBufNext := 0;
+    ReadFile(FHandle, RxBuf, SizeOf(RxBuf), RxBufLength, @Overlapped_read);
+    if RxBufLength = 0 then begin
+      // there was noting immediately available, therefore now wait blocking.
+      SetCommMask(FHandle, EV_RXCHAR);
+      if not WaitCommEvent(FHandle, EvMask, @Overlapped_read) then begin
+        if GetLastError = ERROR_IO_PENDING then begin
+          if WaitForSingleObject(Overlapped_read.hEvent, TimeoutMilli) = WAIT_OBJECT_0 then begin
+            ReadFile(FHandle, RxBuf, SizeOf(RxBuf), RxBufLength, @Overlapped_read);
+            ResetEvent(Overlapped_read.hEvent);
+          end;
+        end;
+      end;
+      SetCommMask(FHandle, 0);
+    end;
+  end;
+
+  // serve one byte directly from RAM, this is quite fast.
+  if RxBufLength > RxBufNext then begin
+    RecvByte := RxBuf[RxBufNext];
+    inc(RxBufNext);
+    Result := 1;
+  end
+  else
+    Result := 0;
+end;
+
+procedure TSimpleComPort.Close;
+begin
+  if IsOpen then begin
+    FIsOpen := False;
+    FileClose(FHandle);
+  end;
+end;
+
+{$endif windows}
+
+{$ifdef unix}
+uses
+  BaseUnix,
+  Unix,
+  serial,
+  sysutils;
+
+{$ifdef linux}
+procedure EnumerateSerialPorts(List: TStrings);
+var
+  SR: TSearchRec;
+begin
+  begin
+    if FindFirst('/sys/class/tty/*', faAnyFile, SR) = 0 then begin
+      repeat
+        if FileExists('/sys/class/tty/' + SR.Name + '/device/driver') then begin
+          List.Append('/dev/' + SR.Name);
+        end;
+      until FindNext(SR) <> 0;
+      FindClose(SR);
+    end;
+  end;
+end;
+{$endif linux}
 
 constructor TSimpleComPort.Create(AOwner: TComponent);
 begin
@@ -139,63 +279,62 @@ begin
 end;
 
 function TSimpleComPort.Open(Port: String; Baud: Integer; Bits: Integer; Parity: Char; StopBits: Integer): Boolean;
+var
+  Par: TParityType;
+begin
+  FHandle := SerOpen(Port);
+  if FHandle > 0 then begin
+    case Parity of
+      'N': Par := NoneParity;
+      'E': Par := EvenParity;
+      'O': Par := OddParity;
+    end;
+    SerSetParams(FHandle, Baud, Bits, Par, StopBits, []);
+    FIsOpen := True;
+  end;
+  Result := IsOpen;
+end;
+
+function TSimpleComPort.Send(B: Byte): LongInt;
+begin
+  Result := Send(B, 1);
+end;
+
+function TSimpleComPort.Send(var Buffer; Count: LongInt): LongInt;
 begin
   if IsOpen then
-    Result := True
-  else begin
-    {$ifdef windows}
-    Port := '\\.\' + Port;
-    {$endif}
-    FHandle := SerOpen(Port);
-    if (FHandle <> THandle(-1)) and (FHandle <> 0) then begin
-      SerSetParams(FHandle, Baud, Bits, ParityTypeFromChar(Parity), StopBits, []);
-      Result := True;
-      FIsOpen := True;
-    end
-    else
-      Result := False;
-  end;
+    Result := SerWrite(FHandle, Buffer, Count)
+  else
+    Result := 0;
 end;
 
-procedure TSimpleComPort.Send(B: Byte);
+function TSimpleComPort.Send(Text: String): LongInt;
 begin
-  Send(B, 1);
+  Result := Send(Text[1], Length(Text));
 end;
 
-procedure TSimpleComPort.Send(var Buffer; Count: LongInt);
-begin
-  if IsOpen then begin
-    SerWrite(FHandle, Buffer, Count);
-    {%H-}SerFlush(FHandle);
-  end;
-end;
-
-procedure TSimpleComPort.Send(Text: String);
-begin
-  Send(Text[1], Length(Text));
-end;
-
-function TSimpleComPort.Receice(TimeoutMilli: Integer; var RecvByte: Byte): LongInt;
-const
-  MILLI_PER_DAY = 1000 * 60 * 60 * 24;
+function TSimpleComPort.ReceiveByte(TimeoutMilli: Integer; out RecvByte: Byte): LongInt;
 var
-  TimeoutTime: Double;
+  readSet: TFDSet;
+  selectTimeout: TTimeVal;
 begin
-  TimeoutTime := Now + TimeoutMilli / MILLI_PER_DAY;
-  repeat
-    Result := SerRead(FHandle, RecvByte, 1);
-    if Result = 1 then break;
-    Sleep(1);
-  until Now > TimeoutTime;
+  fpFD_ZERO(readSet);
+  fpFD_SET(FHandle, readSet);
+  selectTimeout.tv_sec := TimeoutMilli div 1000;
+  selectTimeout.tv_usec := (TimeoutMilli mod 1000) * 1000;
+  Result := 0;
+  if fpSelect(FHandle + 1, @readSet, nil, nil, @selectTimeout) > 0 then
+    Result := fpRead(FHandle, RecvByte{%H-}, 1);
 end;
 
 procedure TSimpleComPort.Close;
 begin
-  if FIsOpen then begin
+  if IsOpen then begin
     SerClose(FHandle);
     FIsOpen := False;
   end;
 end;
 
-end.
-
+{$endif unix}
+
+end.
