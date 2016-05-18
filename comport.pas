@@ -30,8 +30,12 @@ interface
 uses
   {$ifdef windows}
   windows,
+  mmsystem,
   {$endif}
   Classes;
+
+const
+  RXBUF_SIZE = 1024;
 
 type
   { TSimpleComPort }
@@ -42,8 +46,8 @@ type
     destructor Destroy; override;
     function Open(Port: String; Baud: Integer; Bits: Integer; Parity: Char; StopBits: Integer): Boolean;
     function Send(B: Byte): LongInt;
-    function Send(var Buffer; Count: LongInt): LongInt;
-    function Send(Text: String): LongInt;
+    function Send(const Buffer; Count: LongInt): LongInt;
+    function Send(const Str: String): LongInt;
     function ReceiveByte(TimeoutMilli: Integer; out RecvByte: Byte): LongInt;
     procedure Close;
   private
@@ -52,9 +56,12 @@ type
     {$ifdef windows}
     Overlapped_read: TOVERLAPPED;
     Overlapped_write: TOVERLAPPED;
-    RxBuf: array[0..1024] of byte;
+    RxBuf: array[0..RXBUF_SIZE-1] of byte;
     RxBufNext: DWORD;
     RxBufLength: DWORD;
+    FastTimer: Boolean;
+    procedure FastTimerBegin;
+    procedure FastTimerEnd;
     {$endif}
   public
     property IsOpen: Boolean read FIsOpen;
@@ -125,12 +132,12 @@ var
 begin
   Result := False;
   FHandle := CreateFile(
-    PChar(Port),
+    PChar('\\.\' + Port),
     GENERIC_READ or GENERIC_WRITE,
     0,
     nil,
     OPEN_EXISTING,
-    FILE_ATTRIBUTE_NORMAL or FILE_FLAG_OVERLAPPED,
+    FILE_ATTRIBUTE_NORMAL,
     0);
 
   if FHandle <> INVALID_HANDLE_VALUE then begin
@@ -157,6 +164,7 @@ begin
           FIsOpen := True;
           RxBufNext := 0;
           RxBufLength := 0;
+          FastTimerBegin;
         end;
       end;
     end;
@@ -168,10 +176,10 @@ end;
 
 function TSimpleComPort.Send(B: Byte): LongInt;
 begin
-  Result := Send(B, 1);
+  Result := Send(B{%H-}, 1);
 end;
 
-function TSimpleComPort.Send(var Buffer; Count: LongInt): LongInt;
+function TSimpleComPort.Send(const Buffer; Count: LongInt): LongInt;
 var
   Dummy: DWORD;
 begin
@@ -185,10 +193,13 @@ begin
     Result := 0;
 end;
 
-function TSimpleComPort.Send(Text: String): LongInt;
+function TSimpleComPort.Send(const Str: String): LongInt;
 begin
-  Result := Send(Text[1], Length(Text));
+  Result := Send(Str[1], Length(Str));
 end;
+
+(*
+      FUCK the overlapped IO, it just won't work with USB-Serial dongles :-(
 
 function TSimpleComPort.ReceiveByte(TimeoutMilli: Integer; out RecvByte: Byte): LongInt;
 var
@@ -230,12 +241,67 @@ begin
   else
     Result := 0;
 end;
+*)
+
+function TSimpleComPort.ReceiveByte(TimeoutMilli: Integer; out RecvByte: Byte): LongInt;
+var
+  EndTime: TDateTime;
+
+begin
+  if RxBufNext = RxBufLength then begin
+    // Our RX buffer was empty, therefore now wait blocking for new data
+    // and try to read as many bytes into our buffer as there are available,
+    // so when the app asks for the next byte the next time we can just serve
+    // it from memory.
+    RxBufLength := 0;
+    RxBufNext := 0;
+
+    // Polling with sleep seems to be the only reliable way to implement
+    // a blocking read from the serial port on Windows.
+    EndTime := Now + TimeoutMilli / (24 * 60 * 60 * 1000);
+    repeat
+      RxBufLength := FileRead(FHandle, RxBuf, SizeOf(RxBuf));
+      if RxBufLength <> 0 then break;
+      if Now > EndTime then break;
+      Sleep(1);
+    until False
+  end;
+
+  if RxBufLength = $ffffffff then
+    RxBufLength := 0;
+
+  if RxBufLength > RxBufNext then begin
+    RecvByte := RxBuf[RxBufNext];
+    inc(RxBufNext);
+    Result := 1;
+  end
+  else
+    Result := 0;
+
+end;
 
 procedure TSimpleComPort.Close;
 begin
   if IsOpen then begin
     FIsOpen := False;
     FileClose(FHandle);
+    FastTimerEnd;
+  end;
+end;
+
+procedure TSimpleComPort.FastTimerBegin;
+begin
+  if not FastTimer then begin
+    timeBeginPeriod(1);
+    FastTimer := True;
+  end;
+end;
+
+procedure TSimpleComPort.FastTimerEnd;
+begin
+  if FastTimer then begin
+    timeEndPeriod(1);
+    FastTimer := False;
   end;
 end;
 
@@ -252,13 +318,29 @@ uses
 procedure EnumerateSerialPorts(List: TStrings);
 var
   SR: TSearchRec;
+  Link: String;
 begin
   begin
+    // find all /sys/class/tty/* that have a device driver,
+    // these are potential serial ports, add them to the list
     if FindFirst('/sys/class/tty/*', faAnyFile, SR) = 0 then begin
       repeat
         if FileExists('/sys/class/tty/' + SR.Name + '/device/driver') then begin
           List.Append('/dev/' + SR.Name);
         end;
+      until FindNext(SR) <> 0;
+      FindClose(SR);
+    end;
+
+    // also find all symlinks in /dev that point to a tty because
+    // these could be the results of udev SYMLINK rule as outlined in
+    // http://hintshop.ludvig.co.nz/show/persistent-names-usb-serial-devices/
+    if FindFirst('/dev/*', faSymLink, SR) = 0 then begin
+      repeat
+        Link := fpReadLink('/dev/' + SR.Name);
+        if ExtractFileDir(Link) = '' then
+          if List.IndexOf('/dev/' + Link) > -1 then
+             List.Append('/dev/' + SR.Name);
       until FindNext(SR) <> 0;
       FindClose(SR);
     end;
@@ -300,17 +382,17 @@ begin
   Result := Send(B, 1);
 end;
 
-function TSimpleComPort.Send(var Buffer; Count: LongInt): LongInt;
+function TSimpleComPort.Send(const Buffer; Count: LongInt): LongInt;
 begin
   if IsOpen then
-    Result := SerWrite(FHandle, Buffer, Count)
+    Result := SerWrite(FHandle, (@Buffer)^, Count)
   else
     Result := 0;
 end;
 
-function TSimpleComPort.Send(Text: String): LongInt;
+function TSimpleComPort.Send(Const Str: String): LongInt;
 begin
-  Result := Send(Text[1], Length(Text));
+  Result := Send(Str[1], Length(Str));
 end;
 
 function TSimpleComPort.ReceiveByte(TimeoutMilli: Integer; out RecvByte: Byte): LongInt;
@@ -337,4 +419,4 @@ end;
 
 {$endif unix}
 
-end.
+end.
